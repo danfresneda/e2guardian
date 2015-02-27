@@ -1650,7 +1650,7 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 					std::cout << dbgPeerPort << " -Going SSL on connection to proxy" << std::endl;
 #endif
 					std::string certpath = std::string(o.ssl_certificate_path);
-					proxysock.startSslClient(certpath);
+					proxysock.startSslClient(certpath, urldomain);
 
 #ifdef DGDEBUG
 					std::cout << dbgPeerPort << " -Checking certificate" << std::endl;
@@ -3383,7 +3383,7 @@ void ConnectionHandler::requestChecks(HTTPHeader *header, NaughtyFilter *checkme
 #endif
 		//start an ssl client
 		std::string certpath(o.ssl_certificate_path.c_str());
-		if(ssl_sock.startSslClient(certpath) < 0){
+		if(ssl_sock.startSslClient(certpath, *urld) < 0){
 			(*checkme).whatIsNaughty = "Could not open ssl connection" ;
 			(*checkme).whatIsNaughtyLog = (*checkme).whatIsNaughty;
 			(*checkme).isItNaughty = true;

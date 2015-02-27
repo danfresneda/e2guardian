@@ -221,7 +221,7 @@ Socket* Socket::accept()
 
 #ifdef __SSLCERT
 //use this socket as an ssl client
-int Socket::startSslClient(const std::string& certificate_path)
+int Socket::startSslClient(const std::string& certificate_path, const String& hostname)
 {
 	if(isssl){
 		stopSsl();
@@ -260,6 +260,11 @@ int Socket::startSslClient(const std::string& certificate_path)
 
 	//hand socket over to ssl lib
 	ssl = SSL_new(ctx);
+	
+	if (hostname != "") {
+		SSL_set_tlsext_host_name(ssl, hostname.c_str());
+	}
+	
 	SSL_set_options(ssl,SSL_OP_ALL);
 	SSL_set_mode(ssl, SSL_MODE_AUTO_RETRY);
 	SSL_set_connect_state( ssl );
