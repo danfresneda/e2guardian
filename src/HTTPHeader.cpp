@@ -1934,6 +1934,22 @@ void HTTPHeader::discard(Socket *sock, off_t cl)
 	}
 }
 
+void HTTPHeader::in(String data, bool allowpersistent) {
+	do {
+		String line = data.before("\n");
+		if (line != "") {
+			header.push_back(line);
+		}
+		data = data.after("\n");
+	} while (data != "");
+	
+	header.pop_back();
+	if (header.size() == 0)
+		throw std::exception();
+	
+	checkheader(allowpersistent);
+}
+
 void HTTPHeader::in(Socket * sock, bool allowpersistent, bool honour_reloadconfig)
 {
 	if (dirty)

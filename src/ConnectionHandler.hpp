@@ -21,6 +21,8 @@
 bool wasClean(String &url, const int fg);
 // add a known clean URL to the cache
 void addToClean(String &url, const int fg);
+// try to get hostname from ssl handshake
+std::string getSNIHostname(unsigned char* buffer, int length);
 
 // record for storing information about POST data parts
 // used for building up the POST data log column

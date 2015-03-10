@@ -156,6 +156,74 @@ void addToClean(String &url, const int fg)
 	ipcsock.close();
 }
 
+std::string getSNIHostname(unsigned char* buffer, int length) {
+    std::string hostname = "";
+        
+    int pos = 0, len = 0;
+    
+    // check v_major
+    if (buffer[pos + 1] < 3) {
+        return hostname;
+    }
+
+    len = ((buffer[pos + 3] << 8) | buffer[pos + 4]) + 5;
+    if (length < len) {
+        return hostname;
+    }
+
+    length = std::min(len, length); 
+
+    if (buffer[pos + 5] != 0x1) {
+        return hostname;
+    }
+
+    pos += 43; //skip to session id length
+
+    len = buffer[pos];
+    pos += len + 1; //skip past session id
+
+    len = (buffer[pos] << 8) | buffer[pos + 1];
+    pos += len + 2; //skip past cipher suites
+
+    len = buffer[pos];
+    pos += len + 1; //skip past compression methods
+    
+    if (pos >= length) {
+        return hostname;
+    }
+
+    len = (buffer[pos] << 8) | buffer[pos + 1]; //extensions length
+    pos += 2;
+
+    while (pos + 4 <= length) {
+        len = buffer[pos + 2] << 8 | buffer[pos + 3];
+        if ((buffer[pos] << 8 | buffer[pos + 1]) == 0x0 && len > 0) //server_name
+        {
+            int listLen = (buffer[pos + 4] << 8) | buffer[pos + 5], listPos = 0;
+            if (listLen > 0)
+            {
+                while (pos + 6 + listPos + 3 <= length)
+                {
+                    listLen = buffer[pos + 6 + listPos + 2];
+                    if ((buffer[pos + 6 + listPos] << 8 | buffer[pos + 6 + listPos + 1]) == 0x0 && listLen > 0) //host_name
+                    {
+                        hostname.assign((char*)&buffer[pos + 6 + listPos + 3], listLen);
+                        return hostname;
+                    }
+
+                    listPos += listLen + 3;
+                }
+            }
+
+            break;
+        }
+
+        pos += len + 4;
+    }
+
+    return hostname;
+}
+
 //
 // ConnectionHandler class
 //
@@ -394,6 +462,7 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 	bool ismitmcandidate = false;  
 	bool do_mitm = false;
 	bool is_ssl = false;
+	bool is_transparent_ssl = false;
 	int bypasstimestamp = 0;
 #ifdef RXREDIRECTS
 	bool urlredirect = false;
@@ -467,7 +536,47 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 		bool persistProxy = true;
 
 		bool firsttime = true;
-		header.in(&peerconn, true, true);  // get header from client, allowing persistency and breaking on reloadconfig
+		
+		//take a peek at first packet in case it is transparent ssl
+		if (!ismitm) {
+			unsigned char buff[1024];
+			
+			//first just try to get the first bytes to check
+			int bufflen = peerconn.readFromSocket((char*)buff, 6, MSG_PEEK, 10);
+			
+			//check if it's a client ssl handshake
+			if (bufflen == 6 && buff[0] == 0x16 && buff[5] == 0x1) {
+#ifdef DGDEBUG
+				std::cout << "first packet is ssl client handshake" << std::endl;
+#endif
+				bufflen = peerconn.readFromSocket((char*)buff, 1024, MSG_PEEK, 10);
+				std::string hostname = getSNIHostname(buff, bufflen);
+				
+#ifdef ENABLE_ORIG_IP
+				if (hostname == "") {
+					sockaddr_in origaddr;
+					socklen_t origaddrlen(sizeof(sockaddr_in));
+					
+					if (getsockopt(peerconn.getFD(), SOL_IP, SO_ORIGINAL_DST, &origaddr, &origaddrlen) == 0) {
+						hostname = std::string(inet_ntoa(origaddr.sin_addr));
+					} else {
+						syslog(LOG_ERR, "Failed to get client's original destination IP: %s", strerror(errno));
+					}
+				}
+#endif
+				if (hostname != "") {
+					is_transparent_ssl = true;
+					urldomain = hostname;
+				}
+			}
+		}
+		
+		if (is_transparent_ssl) {
+			// fake a CONNECT request
+			header.in("CONNECT " + urldomain + ":443 HTTP/1.1\r\n\r\n", true);
+		} else {
+			header.in(&peerconn, true, true);  // get header from client, allowing persistency and breaking on reloadconfig
+		}
 //
 // End of set-up section
 //
@@ -562,11 +671,17 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 				// our filter
 				checkme.reset();
 			}
-			url = header.getUrl(false, ismitm);
-			logurl = header.getLogUrl(false, ismitm); 
-			urld = header.decode(url);
-			urldomain = url.getHostname();
-			is_ssl = header.requestType().startsWith("CONNECT");
+			if (is_transparent_ssl) {
+				url = "https://" + urldomain;
+				logurl = url;
+				is_ssl = true;
+			} else {
+				url = header.getUrl(false, ismitm);
+				logurl = header.getLogUrl(false, ismitm);
+				urldomain = url.getHostname();
+				is_ssl = header.requestType().startsWith("CONNECT");
+			}
+			
 #ifdef DGDEBUG
                         std::cerr << getpid() << "Start URL " << url.c_str() << "is_ssl=" << is_ssl << "ismitm=" << ismitm << std::endl;
 #endif
@@ -620,6 +735,7 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 			urld = header.decode(url);
 			if (o.use_total_block_list && o.inTotalBlockList(urld)) {
 			   //if ( header.requestType().startsWith("CONNECT")) 
+				   //TODO: what about transparent ssl?
 			   if (is_ssl ) {
 				try {	// writestring throws exception on error/timeout
 					peerconn.writeString("HTTP/1.0 404 Banned Site\nContent-Type: text/html\n\n<HTML><HEAD><TITLE>Protex - Banned Site</TITLE></HEAD><BODY><H1>Protex - Banned Site</H1> ");
@@ -1301,7 +1417,7 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 #ifdef DGDEBUG
 				std::cout << dbgPeerPort << " -persistPeer: " << persistPeer << std::endl;
 #endif
-				docheader.out(NULL, &peerconn, __DGHEADER_SENDALL);
+				if (!is_transparent_ssl) docheader.out(NULL, &peerconn, __DGHEADER_SENDALL);
 				// only open a two-way tunnel on CONNECT if the return code indicates success
 				if (!(docheader.returnCode() == 200)) {
 					isconnect = false;
@@ -1627,10 +1743,12 @@ void ConnectionHandler::handleConnection(Socket &peerconn, String &ip, bool ismi
 #ifdef DGDEBUG
 					std::cout << dbgPeerPort << " -Going SSL on the peer connection" << std::endl;
 #endif
-					//send a 200 to the client no matter what because they managed to get a connection to us
-					//and we can use it for a blockpage if nothing else
-					std::string msg = "HTTP/1.0 200 Connection established\r\n\r\n";
-					peerconn.writeString(msg.c_str());
+					if (!is_transparent_ssl) {
+						//send a 200 to the client no matter what because they managed to get a connection to us
+						//and we can use it for a blockpage if nothing else
+						std::string msg = "HTTP/1.0 200 Connection established\r\n\r\n";
+						peerconn.writeString(msg.c_str());
+					}
 					
 					if (peerconn.startSslServer(cert,pkey) < 0){
 						//make sure the ssl stuff is shutdown properly so we display the old ssl blockpage

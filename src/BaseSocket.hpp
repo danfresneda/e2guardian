@@ -17,12 +17,6 @@
 #include <exception>
 #include <netinet/in.h>
 #include <arpa/inet.h>
-#include <queue>
-
-#ifdef ENABLE_ORIG_IP
-#include <linux/types.h>
-#include <linux/netfilter_ipv4.h>
-#endif
 
 int selectEINTR(int numfds, fd_set * readfds, fd_set * writefds, fd_set * exceptfds, struct timeval *timeout, bool honour_reloadconfig = false);
 
@@ -75,9 +69,6 @@ public:
 	void writeToSockete(const char *buff, int len, unsigned int flags, int timeout, bool honour_reloadconfig = false) throw(std::exception);
 
 protected:
-	bool firstRead;
-	bool isTransparentSsl;
-	std::queue<std::string> forgeHeaders;
 	// socket-wide timeout (is this actually used?)
 	int timeout;
 	// length of address of other end of socket (e.g. size of sockaddr_in or sockaddr_un)

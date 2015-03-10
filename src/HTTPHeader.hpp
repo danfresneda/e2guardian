@@ -39,6 +39,8 @@ public:
 
 	void setTimeout(int t);
 	void in(Socket *sock, bool allowpersistent = false, bool honour_reloadconfig = false);
+	
+	void in(String data, bool allowpersistent = false);
 
 	// send headers out over the given socket
 	// "reconnect" flag gives permission to reconnect to the socket on write error
