@@ -324,7 +324,7 @@ X509 * CertificateAuthority::generateCertificate(const char * commonname, struct
 	}
 	
 	//sign it using the ca
-	if (!X509_sign(newCert, _caPrivKey, EVP_sha1())){
+	if (!X509_sign(newCert, _caPrivKey, EVP_sha256())){
 		X509_free(newCert);
 		return NULL;
 	}

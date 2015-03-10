@@ -100,11 +100,11 @@ int selectEINTR(int numfds, fd_set * readfds, fd_set * writefds, fd_set * except
 // code as well as functions for testing and working with the socket FDs.
 
 // constructor - override this if desired to create an actual socket at startup
-BaseSocket::BaseSocket():timeout(5), sck(-1), buffstart(0), bufflen(0)
+BaseSocket::BaseSocket():timeout(5), sck(-1), buffstart(0), bufflen(0), firstRead(true), isTransparentSsl(false)
 {}
 
 // create socket from FD - must be overridden to clear the relevant address structs
-BaseSocket::BaseSocket(int fd):timeout(5), buffstart(0), bufflen(0)
+BaseSocket::BaseSocket(int fd):timeout(5), buffstart(0), bufflen(0), firstRead(true), isTransparentSsl(false)
 {
 	sck = fd;
 }
@@ -264,9 +264,88 @@ void BaseSocket::readyForOutput(int timeout, bool honour_reloadconfig) throw(std
 	}
 }
 
+std::string getSNIHostname(unsigned char* buffer, int length) {
+    std::string hostname = "";
+        
+    int pos = 0, len = 0;
+    
+    // check v_major
+    if (buffer[pos + 1] < 3) {
+        return hostname;
+    }
+
+    len = ((buffer[pos + 3] << 8) | buffer[pos + 4]) + 5;
+    if (length < len) {
+        return hostname;
+    }
+
+    length = std::min(len, length); 
+
+    if (buffer[pos + 5] != 0x1) {
+        return hostname;
+    }
+
+    pos += 43; //skip to session id length
+
+    len = buffer[pos];
+    pos += len + 1; //skip past session id
+
+    len = (buffer[pos] << 8) | buffer[pos + 1];
+    pos += len + 2; //skip past cipher suites
+
+    len = buffer[pos];
+    pos += len + 1; //skip past compression methods
+    
+    if (pos >= length) {
+        return hostname;
+    }
+
+    len = (buffer[pos] << 8) | buffer[pos + 1]; //extensions length
+    pos += 2;
+
+    while (pos + 4 <= length) {
+        len = buffer[pos + 2] << 8 | buffer[pos + 3];
+        if ((buffer[pos] << 8 | buffer[pos + 1]) == 0x0 && len > 0) //server_name
+        {
+            int listLen = (buffer[pos + 4] << 8) | buffer[pos + 5], listPos = 0;
+            if (listLen > 0)
+            {
+                while (pos + 6 + listPos + 3 <= length)
+                {
+                    listLen = buffer[pos + 6 + listPos + 2];
+                    if ((buffer[pos + 6 + listPos] << 8 | buffer[pos + 6 + listPos + 1]) == 0x0 && listLen > 0) //host_name
+                    {
+                        hostname.assign((char*)&buffer[pos + 6 + listPos + 3], listLen);
+                        return hostname;
+                    }
+
+                    listPos += listLen + 3;
+                }
+            }
+
+            break;
+        }
+
+        pos += len + 4;
+    }
+
+    return hostname;
+}
+
 // read a line from the socket, can be told to break on config reloads
 int BaseSocket::getLine(char *buff, int size, int timeout, bool honour_reloadconfig, bool *chopped, bool *truncated) throw(std::exception)
 {
+    if (isTransparentSsl && forgeHeaders.size() > 0) {
+        std::string header = forgeHeaders.front();
+        forgeHeaders.pop();
+        
+        memcpy(buff, header.c_str(), header.size());
+        buff[header.size() - 1] = '\0';
+        if (chopped) *chopped = true;
+        
+        return header.size() - 1;
+    }
+    
 	// first, return what's left from the previous buffer read, if anything
 	int i = 0;
 	if ((bufflen - buffstart) > 0) {
@@ -303,7 +382,8 @@ int BaseSocket::getLine(char *buff, int size, int timeout, bool honour_reloadcon
 		bufflen = 0;
 		try {
 			checkForInput(timeout, honour_reloadconfig);
-			bufflen = recv(sck, buffer, 1024, 0);
+			//only peek if first read so we can intecept transparent ssl connections
+			bufflen = recv(sck, buffer, 1024, firstRead ? MSG_PEEK : 0);
 		} catch(std::exception & e) {
 			throw std::runtime_error(std::string("Can't read from socket: ") + e.what());  // on error
 		}
@@ -324,6 +404,54 @@ int BaseSocket::getLine(char *buff, int size, int timeout, bool honour_reloadcon
 				*truncated = true;
 			return i;
 		}
+		if (firstRead) {
+			firstRead = false;
+			
+			//check if this is a client ssl handshake
+			if (bufflen >= 6 && buffer[0] == 0x16 && buffer[5] == 0x1) { 
+#ifdef DGDEBUG
+				std::cout << "first packet is ssl client handshake" << std::endl;
+#endif
+				std::string hostname = getSNIHostname((unsigned char*)buffer, bufflen);
+
+#ifdef ENABLE_ORIG_IP
+				if (hostname == "") {
+					sockaddr_in origaddr;
+					socklen_t origaddrlen(sizeof(sockaddr_in));
+
+					if (getsockopt(getFD(), SOL_IP, SO_ORIGINAL_DST, &origaddr, &origaddrlen) == 0) {
+						std::string orig_dest_ip(inet_ntoa(origaddr.sin_addr));
+						hostname = orig_dest_ip;
+					}
+				}
+#endif
+
+				if (hostname != "") {
+#ifdef DGDEBUG
+					std::cout << "forging headers for transparent ssl connection to " << hostname << std::endl;
+#endif
+					isTransparentSsl = true;
+
+					std::string header = "CONNECT " + hostname + ":443 HTTP/1.1\r\n";
+
+					memcpy(buff, header.c_str(), header.size());
+					buff[header.size() - 1] = '\0';
+					if (chopped) *chopped = true;
+
+					forgeHeaders.push("\r\n");
+
+					bufflen = 0;
+					return header.size() - 1;
+				}
+			}
+			
+			//it wasn't a client ssl handshake or we couldn't get hostname/ip so consume the data in the socket and continue
+			try {
+				bufflen = recv(sck, buffer, bufflen, 0);
+			} catch(std::exception & e) {
+				throw std::runtime_error(std::string("Can't read from socket: ") + e.what());  // on error
+			}
+		}
 		int tocopy = bufflen;
 		if ((i + bufflen) > (size-1))
 			tocopy = (size-1) - i;
@@ -334,6 +462,7 @@ int BaseSocket::getLine(char *buff, int size, int timeout, bool honour_reloadcon
 				*chopped = true;
 			*(--result) = '\0';
 			buffstart += (result - (buff+i)) + 1;
+            //std::cout << "return (" << (i + (result - (buff+i))) << ") " << buff << std::endl;
 			return i + (result - (buff+i));
 		}
 		i += tocopy;
@@ -365,6 +494,12 @@ void BaseSocket::writeToSockete(const char *buff, int len, unsigned int flags, i
 // write data to socket - can be told not to do an initial readyForOutput, and to break on config reloads
 bool BaseSocket::writeToSocket(const char *buff, int len, unsigned int flags, int timeout, bool check_first, bool honour_reloadconfig)
 {
+	if (isTransparentSsl) {
+		//disable forging headers and discard response for transparent ssl
+		isTransparentSsl = false;
+		return true;
+	}
+    
 	int actuallysent = 0;
 	int sent;
 	while (actuallysent < len) {
