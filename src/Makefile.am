@@ -67,8 +67,10 @@ endif
 
 if PRT_DNSAUTH
 DNSAUTH_SOURCE = authplugins/dnsauth.cpp
+DNSUSERAUTH_SOURCE = authplugins/userdnsauth.cpp
 else
 DNSAUTH_SOURCE =
+DNSUSERAUTH_SOURCE =
 endif
 
 
@@ -124,4 +126,5 @@ e2guardian_SOURCES = String.cpp String.hpp \
 		       $(TRICKLEDM_SOURCE) $(PROXYAUTH_SOURCE) \
 		       $(IDENTAUTH_SOURCE) $(IPAUTH_SOURCE) \
 		       $(DNSAUTH_SOURCE) $(PORTAUTH_SOURCE) \
-		       $(NTLMAUTH_SOURCE) $(DIGESTAUTH_SOURCE)
+		       $(NTLMAUTH_SOURCE) $(DIGESTAUTH_SOURCE) \
+                       $(DNSUSERAUTH_SOURCE)

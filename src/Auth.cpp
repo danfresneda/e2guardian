@@ -28,6 +28,7 @@ extern authcreate_t ipcreate;
 extern authcreate_t portcreate;
 #ifdef PRT_DNSAUTH
 extern authcreate_t dnsauthcreate;
+extern authcreate_t userdnsauthcreate;
 #endif
 
 #ifdef ENABLE_NTLM
@@ -163,6 +164,13 @@ AuthPlugin* auth_plugin_load(const char *pluginConfigPath)
 #endif
 		return dnsauthcreate(cv);
 	}
+
+        if (plugname == "userdnsauth") {
+#ifdef DGDEBUG
+                std::cout << "Enabling user-only DNS-based auth plugin" << std::endl;
+#endif
+                return userdnsauthcreate(cv);
+        }
 #endif
 
 #ifdef ENABLE_NTLM
